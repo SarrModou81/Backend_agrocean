@@ -10,6 +10,7 @@ use App\Models\Stock;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Log;
 
 class VenteController extends Controller
 {
@@ -47,16 +48,22 @@ class VenteController extends Controller
         ]);
 
         if ($validator->fails()) {
-            return response()->json($validator->errors(), 422);
+            return response()->json([
+                'error' => 'Validation échouée',
+                'details' => $validator->errors()
+            ], 422);
         }
 
-        // Vérifier la disponibilité des stocks
+        // Vérifier la disponibilité des stocks AVANT la transaction
         foreach ($request->produits as $item) {
             $produit = \App\Models\Produit::findOrFail($item['produit_id']);
+            $stockDisponible = $produit->stockTotal();
 
-            if (!$produit->verifierDisponibilite($item['quantite'])) {
+            if ($stockDisponible < $item['quantite']) {
                 return response()->json([
-                    'error' => "Stock insuffisant pour le produit: {$produit->nom}"
+                    'error' => "Stock insuffisant pour le produit: {$produit->nom}",
+                    'stock_disponible' => $stockDisponible,
+                    'quantite_demandee' => $item['quantite']
                 ], 400);
             }
         }
@@ -71,31 +78,59 @@ class VenteController extends Controller
                 'user_id' => auth()->id(),
                 'date_vente' => $request->date_vente,
                 'remise' => $request->remise ?? 0,
+                'montant_ht' => 0,
+                'montant_ttc' => 0,
                 'statut' => 'Brouillon'
             ]);
 
             // Créer les détails de vente
+            $sousTotal = 0;
+
             foreach ($request->produits as $item) {
+                $sousTotalLigne = $item['quantite'] * $item['prix_unitaire'];
+                $sousTotal += $sousTotalLigne;
+
                 DetailVente::create([
                     'vente_id' => $vente->id,
                     'produit_id' => $item['produit_id'],
                     'quantite' => $item['quantite'],
-                    'prix_unitaire' => $item['prix_unitaire']
+                    'prix_unitaire' => $item['prix_unitaire'],
+                    'sous_total' => $sousTotalLigne
                 ]);
 
-                // Réserver le stock
-                $stock = Stock::where('produit_id', $item['produit_id'])
+                // Réserver le stock (FIFO)
+                $quantiteRestante = $item['quantite'];
+                $stocks = Stock::where('produit_id', $item['produit_id'])
                     ->where('statut', 'Disponible')
+                    ->where('quantite', '>', 0)
                     ->orderBy('date_entree', 'asc')
-                    ->first();
+                    ->get();
 
-                if ($stock) {
-                    $stock->ajusterQuantite(-$item['quantite']);
+                foreach ($stocks as $stock) {
+                    if ($quantiteRestante <= 0) break;
+
+                    if ($stock->quantite >= $quantiteRestante) {
+                        $stock->ajusterQuantite(-$quantiteRestante);
+                        $quantiteRestante = 0;
+                    } else {
+                        $quantiteRestante -= $stock->quantite;
+                        $stock->ajusterQuantite(-$stock->quantite);
+                    }
+                }
+
+                if ($quantiteRestante > 0) {
+                    throw new \Exception("Impossible de réserver le stock pour le produit ID: {$item['produit_id']}");
                 }
             }
 
             // Calculer les totaux
-            $vente->calculerTotal();
+            $montantHT = $sousTotal - ($request->remise ?? 0);
+            $montantTTC = $montantHT * 1.18; // TVA 18%
+
+            $vente->update([
+                'montant_ht' => $montantHT,
+                'montant_ttc' => $montantTTC
+            ]);
 
             DB::commit();
 
@@ -106,9 +141,16 @@ class VenteController extends Controller
 
         } catch (\Exception $e) {
             DB::rollBack();
+
+            Log::error('Erreur création vente', [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'request' => $request->all()
+            ]);
+
             return response()->json([
                 'error' => 'Erreur lors de la création de la vente',
-                'details' => $e->getMessage()
+                'message' => $e->getMessage()
             ], 500);
         }
     }
@@ -142,7 +184,10 @@ class VenteController extends Controller
         ]);
 
         if ($validator->fails()) {
-            return response()->json($validator->errors(), 422);
+            return response()->json([
+                'error' => 'Validation échouée',
+                'details' => $validator->errors()
+            ], 422);
         }
 
         $vente->update($request->all());

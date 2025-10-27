@@ -38,12 +38,34 @@ class Stock extends Model
         return $this->belongsTo(Entrepot::class);
     }
 
+    /**
+     * Ajuster la quantité en stock avec validation
+     */
     public function ajusterQuantite($quantite)
     {
-        $this->quantite += $quantite;
+        $nouvelleQuantite = $this->quantite + $quantite;
+
+        if ($nouvelleQuantite < 0) {
+            throw new \Exception("La quantité ne peut pas être négative pour le stock ID: {$this->id}. Quantité actuelle: {$this->quantite}, ajustement demandé: {$quantite}");
+        }
+
+        $this->quantite = $nouvelleQuantite;
+
+        // Mettre à jour le statut si la quantité tombe à 0
+        if ($nouvelleQuantite == 0) {
+            $this->statut = 'Épuisé';
+        } elseif ($this->statut == 'Épuisé' && $nouvelleQuantite > 0) {
+            $this->statut = 'Disponible';
+        }
+
         $this->save();
+
+        return $this;
     }
 
+    /**
+     * Vérifier l'état de péremption du produit
+     */
     public function verifierPeremption()
     {
         if ($this->date_peremption) {
@@ -60,8 +82,33 @@ class Stock extends Model
         return 'ok';
     }
 
+    /**
+     * Calculer la valeur totale du stock
+     */
     public function calculerValeur()
     {
+        if (!$this->produit) {
+            return 0;
+        }
         return $this->quantite * $this->produit->prix_achat;
+    }
+
+    /**
+     * Scope pour stocks disponibles
+     */
+    public function scopeDisponible($query)
+    {
+        return $query->where('statut', 'Disponible')
+            ->where('quantite', '>', 0);
+    }
+
+    /**
+     * Scope pour stocks expirés ou proche expiration
+     */
+    public function scopeExpirationProche($query, $jours = 7)
+    {
+        return $query->whereNotNull('date_peremption')
+            ->whereDate('date_peremption', '<=', Carbon::now()->addDays($jours))
+            ->whereDate('date_peremption', '>=', Carbon::now());
     }
 }
