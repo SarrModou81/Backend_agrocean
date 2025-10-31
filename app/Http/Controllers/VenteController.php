@@ -133,7 +133,7 @@ class VenteController extends Controller
             ]);
 
             DB::commit();
-
+            $facture = $vente->genererFacture();
             return response()->json([
                 'message' => 'Vente créée avec succès',
                 'vente' => $vente->load(['client', 'detailVentes.produit'])

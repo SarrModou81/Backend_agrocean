@@ -142,15 +142,9 @@ class FactureController extends Controller
             return $facture;
         });
 
-        $totalImpaye = $factures->sum('montant_restant');
-
-        return response()->json([
-            'total_factures' => $factures->count(),
-            'montant_total_impaye' => $totalImpaye,
-            'factures' => $factures
-        ]);
+        // Retourner directement le tableau de factures (pas un objet avec meta)
+        return response()->json($factures);
     }
-
     /**
      * Factures échues
      */
