@@ -54,6 +54,11 @@ class CommandeAchat extends Model
         $this->save();
     }
 
+    public function factureFournisseur()
+    {
+        return $this->hasOne(FactureFournisseur::class);
+    }
+
     public function receptionner($entrepot_id)
     {
         foreach ($this->detailCommandeAchats as $detail) {
@@ -70,5 +75,27 @@ class CommandeAchat extends Model
 
         $this->statut = 'Reçue';
         $this->save();
+
+        // Générer automatiquement la facture fournisseur
+        $this->genererFactureFournisseur();
+    }
+
+    public function genererFactureFournisseur()
+    {
+        if ($this->factureFournisseur) {
+            return $this->factureFournisseur;
+        }
+
+        return FactureFournisseur::create([
+            'numero' => 'FF' . date('Y') . str_pad($this->id, 6, '0', STR_PAD_LEFT),
+            'commande_achat_id' => $this->id,
+            'fournisseur_id' => $this->fournisseur_id,
+            'date_emission' => now(),
+            'date_echeance' => now()->addDays(30),
+            'montant_total' => $this->montant_total,
+            'statut' => 'Impayée'
+        ]);
     }
 }
+
+

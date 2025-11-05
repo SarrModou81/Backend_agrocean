@@ -2,6 +2,7 @@
 
 // routes/api.php
 
+use App\Http\Controllers\FactureFournisseurController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\UserController;
@@ -125,4 +126,8 @@ Route::middleware('auth:api')->group(function () {
     Route::get('/bilans/compte-resultat', [BilanFinancierController::class, 'compteResultat']);
     Route::get('/bilans/bilan-comptable', [BilanFinancierController::class, 'bilanComptable']);
     Route::get('/bilans/dashboard-financier', [BilanFinancierController::class, 'dashboardFinancier']);
+
+    // ===== FACTURES FOURNISSEURS =====
+    Route::apiResource('factures-fournisseurs', FactureFournisseurController::class);
+    Route::get('/factures-fournisseurs/impayees/liste', [FactureFournisseurController::class, 'impayees']);
 });

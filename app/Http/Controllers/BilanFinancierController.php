@@ -95,36 +95,40 @@ class BilanFinancierController extends Controller
     /**
      * État de la trésorerie
      */
+// app/Http/Controllers/BilanFinancierController.php
     public function etatTresorerie(Request $request)
     {
         $dateDebut = $request->input('date_debut', now()->startOfMonth());
         $dateFin = $request->input('date_fin', now()->endOfMonth());
 
-        // Encaissements (paiements clients)
-        $encaissements = Paiement::whereNotNull('client_id')
-            ->whereBetween('date_paiement', [$dateDebut, $dateFin])
+        // ENCAISSEMENTS = Paiements reçus des CLIENTS uniquement
+        $encaissements = Paiement::whereNotNull('facture_id') // Factures clients
+        ->whereBetween('date_paiement', [$dateDebut, $dateFin])
             ->sum('montant');
 
-        // Décaissements (paiements fournisseurs)
-        $decaissements = Paiement::whereNotNull('fournisseur_id')
-            ->whereBetween('date_paiement', [$dateDebut, $dateFin])
+        // DÉCAISSEMENTS = Paiements faits aux FOURNISSEURS uniquement
+        $decaissements = Paiement::whereNotNull('facture_fournisseur_id') // Factures fournisseurs
+        ->whereBetween('date_paiement', [$dateDebut, $dateFin])
             ->sum('montant');
 
-        // Solde
+        // Solde de trésorerie
         $solde = $encaissements - $decaissements;
 
-        // Créances clients (factures impayées)
-        $creances = \App\Models\Facture::whereIn('statut', ['Impayée', 'Partiellement Payée'])
+        // CRÉANCES CLIENTS = Factures clients impayées ou partiellement payées
+        $creancesClients = \App\Models\Facture::whereIn('statut', ['Impayée', 'Partiellement Payée'])
             ->with('paiements')
             ->get()
             ->sum(function($facture) {
                 return $facture->montant_ttc - $facture->paiements->sum('montant');
             });
 
-        // Dettes fournisseurs
-        $dettes = CommandeAchat::where('statut', 'Reçue')
-                ->whereBetween('date_commande', [$dateDebut, $dateFin])
-                ->sum('montant_total') - $decaissements;
+        // DETTES FOURNISSEURS = Factures fournisseurs impayées ou partiellement payées
+        $dettesFournisseurs = \App\Models\FactureFournisseur::whereIn('statut', ['Impayée', 'Partiellement Payée'])
+            ->with('paiements')
+            ->get()
+            ->sum(function($facture) {
+                return $facture->montant_total - $facture->paiements->sum('montant');
+            });
 
         // Évolution quotidienne
         $evolutionQuotidienne = [];
@@ -132,11 +136,13 @@ class BilanFinancierController extends Controller
         $fin = Carbon::parse($dateFin);
 
         while ($debut <= $fin) {
-            $encJour = Paiement::whereNotNull('client_id')
+            // Encaissements du jour (paiements clients)
+            $encJour = Paiement::whereNotNull('facture_id')
                 ->whereDate('date_paiement', $debut)
                 ->sum('montant');
 
-            $decJour = Paiement::whereNotNull('fournisseur_id')
+            // Décaissements du jour (paiements fournisseurs)
+            $decJour = Paiement::whereNotNull('facture_fournisseur_id')
                 ->whereDate('date_paiement', $debut)
                 ->sum('montant');
 
@@ -158,13 +164,12 @@ class BilanFinancierController extends Controller
             'encaissements' => $encaissements,
             'decaissements' => $decaissements,
             'solde' => $solde,
-            'creances_clients' => $creances,
-            'dettes_fournisseurs' => $dettes,
-            'tresorerie_nette' => $solde - $dettes + $creances,
+            'creances_clients' => $creancesClients,
+            'dettes_fournisseurs' => $dettesFournisseurs,
+            'tresorerie_nette' => $solde - $dettesFournisseurs + $creancesClients,
             'evolution_quotidienne' => $evolutionQuotidienne
         ]);
     }
-
     /**
      * Compte de résultat
      */

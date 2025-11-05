@@ -41,11 +41,17 @@ class Paiement extends Model
         return $this->belongsTo(Fournisseur::class);
     }
 
+    public function factureFournisseur()
+    {
+        return $this->belongsTo(FactureFournisseur::class);
+    }
+
     protected static function boot()
     {
         parent::boot();
 
         static::created(function ($paiement) {
+            // Mise à jour facture client
             if ($paiement->facture) {
                 $totalPaiements = $paiement->facture->paiements->sum('montant');
 
@@ -56,6 +62,19 @@ class Paiement extends Model
                 }
 
                 $paiement->facture->save();
+            }
+
+            // Mise à jour facture fournisseur
+            if ($paiement->factureFournisseur) {
+                $totalPaiements = $paiement->factureFournisseur->paiements->sum('montant');
+
+                if ($totalPaiements >= $paiement->factureFournisseur->montant_total) {
+                    $paiement->factureFournisseur->statut = 'Payée';
+                } else {
+                    $paiement->factureFournisseur->statut = 'Partiellement Payée';
+                }
+
+                $paiement->factureFournisseur->save();
             }
         });
     }
