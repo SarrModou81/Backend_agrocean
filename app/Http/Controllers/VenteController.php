@@ -97,30 +97,6 @@ class VenteController extends Controller
                     'prix_unitaire' => $item['prix_unitaire'],
                     'sous_total' => $sousTotalLigne
                 ]);
-
-                // Réserver le stock (FIFO)
-                $quantiteRestante = $item['quantite'];
-                $stocks = Stock::where('produit_id', $item['produit_id'])
-                    ->where('statut', 'Disponible')
-                    ->where('quantite', '>', 0)
-                    ->orderBy('date_entree', 'asc')
-                    ->get();
-
-                foreach ($stocks as $stock) {
-                    if ($quantiteRestante <= 0) break;
-
-                    if ($stock->quantite >= $quantiteRestante) {
-                        $stock->ajusterQuantite(-$quantiteRestante);
-                        $quantiteRestante = 0;
-                    } else {
-                        $quantiteRestante -= $stock->quantite;
-                        $stock->ajusterQuantite(-$stock->quantite);
-                    }
-                }
-
-                if ($quantiteRestante > 0) {
-                    throw new \Exception("Impossible de réserver le stock pour le produit ID: {$item['produit_id']}");
-                }
             }
 
             // Calculer les totaux
@@ -133,7 +109,7 @@ class VenteController extends Controller
             ]);
 
             DB::commit();
-            $facture = $vente->genererFacture();
+
             return response()->json([
                 'message' => 'Vente créée avec succès',
                 'vente' => $vente->load(['client', 'detailVentes.produit'])
@@ -204,35 +180,175 @@ class VenteController extends Controller
 
     public function valider($id)
     {
-        $vente = Vente::findOrFail($id);
+        DB::beginTransaction();
 
-        if ($vente->statut != 'Brouillon') {
+        try {
+            $vente = Vente::with('detailVentes.produit')->findOrFail($id);
+
+            // Vérifier le statut
+            if ($vente->statut != 'Brouillon') {
+                return response()->json([
+                    'error' => 'Seules les ventes en brouillon peuvent être validées',
+                    'statut_actuel' => $vente->statut
+                ], 400);
+            }
+
+            // Vérifier à nouveau la disponibilité des stocks
+            foreach ($vente->detailVentes as $detail) {
+                $produit = $detail->produit;
+                $stockDisponible = $produit->stockTotal();
+
+                if ($stockDisponible < $detail->quantite) {
+                    DB::rollBack();
+                    return response()->json([
+                        'error' => "Stock insuffisant pour le produit: {$produit->nom}",
+                        'stock_disponible' => $stockDisponible,
+                        'quantite_requise' => $detail->quantite
+                    ], 400);
+                }
+            }
+
+            // Déduire le stock (FIFO)
+            foreach ($vente->detailVentes as $detail) {
+                $quantiteRestante = $detail->quantite;
+                $stocks = Stock::where('produit_id', $detail->produit_id)
+                    ->where('statut', 'Disponible')
+                    ->where('quantite', '>', 0)
+                    ->orderBy('date_entree', 'asc')
+                    ->get();
+
+                foreach ($stocks as $stock) {
+                    if ($quantiteRestante <= 0) break;
+
+                    if ($stock->quantite >= $quantiteRestante) {
+                        $stock->ajusterQuantite(-$quantiteRestante);
+                        $quantiteRestante = 0;
+                    } else {
+                        $quantiteRestante -= $stock->quantite;
+                        $stock->ajusterQuantite(-$stock->quantite);
+                    }
+                }
+
+                if ($quantiteRestante > 0) {
+                    DB::rollBack();
+                    return response()->json([
+                        'error' => "Impossible de réserver le stock pour le produit: {$detail->produit->nom}",
+                        'quantite_manquante' => $quantiteRestante
+                    ], 400);
+                }
+            }
+
+            // Changer le statut
+            $vente->statut = 'Validée';
+            $vente->save();
+
+            // Générer la facture
+            $facture = $vente->genererFacture();
+
+            DB::commit();
+
             return response()->json([
-                'error' => 'Seules les ventes en brouillon peuvent être validées'
-            ], 400);
+                'message' => 'Vente validée avec succès',
+                'vente' => $vente->load(['client', 'detailVentes.produit', 'facture']),
+                'facture' => $facture
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+
+            Log::error('Erreur validation vente', [
+                'vente_id' => $id,
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return response()->json([
+                'error' => 'Erreur lors de la validation de la vente',
+                'message' => $e->getMessage()
+            ], 500);
         }
-
-        $vente->statut = 'Validée';
-        $vente->save();
-
-        $facture = $vente->genererFacture();
-
-        return response()->json([
-            'message' => 'Vente validée avec succès',
-            'vente' => $vente,
-            'facture' => $facture
-        ]);
     }
 
     public function annuler($id)
     {
-        $vente = Vente::findOrFail($id);
-        $vente->annuler();
+        DB::beginTransaction();
 
-        return response()->json([
-            'message' => 'Vente annulée avec succès',
-            'vente' => $vente
-        ]);
+        try {
+            $vente = Vente::with('detailVentes.produit')->findOrFail($id);
+
+            // Vérifier que la vente peut être annulée
+            if ($vente->statut == 'Annulée') {
+                return response()->json([
+                    'error' => 'Cette vente est déjà annulée'
+                ], 400);
+            }
+
+            if ($vente->statut == 'Livrée') {
+                return response()->json([
+                    'error' => 'Impossible d\'annuler une vente déjà livrée'
+                ], 400);
+            }
+
+            // Si la vente était validée, remettre le stock
+            if ($vente->statut == 'Validée') {
+                foreach ($vente->detailVentes as $detail) {
+                    // Remettre le stock dans le premier entrepôt disponible
+                    $stock = Stock::where('produit_id', $detail->produit_id)
+                        ->where('statut', 'Disponible')
+                        ->orderBy('date_entree', 'desc')
+                        ->first();
+
+                    if ($stock) {
+                        $stock->ajusterQuantite($detail->quantite);
+                    } else {
+                        // Créer une nouvelle entrée de stock
+                        $entrepot = \App\Models\Entrepot::first();
+                        if ($entrepot) {
+                            Stock::create([
+                                'produit_id' => $detail->produit_id,
+                                'entrepot_id' => $entrepot->id,
+                                'quantite' => $detail->quantite,
+                                'emplacement' => 'Retour-' . $vente->numero,
+                                'date_entree' => now(),
+                                'numero_lot' => 'RET-' . $vente->numero . '-' . $detail->produit_id,
+                                'statut' => 'Disponible'
+                            ]);
+                        }
+                    }
+                }
+            }
+
+            // Annuler la vente
+            $vente->statut = 'Annulée';
+            $vente->save();
+
+            // Annuler la facture si elle existe
+            if ($vente->facture) {
+                $vente->facture->statut = 'Annulée';
+                $vente->facture->save();
+            }
+
+            DB::commit();
+
+            return response()->json([
+                'message' => 'Vente annulée avec succès',
+                'vente' => $vente->load(['client', 'detailVentes.produit', 'facture'])
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+
+            Log::error('Erreur annulation vente', [
+                'vente_id' => $id,
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return response()->json([
+                'error' => 'Erreur lors de l\'annulation de la vente',
+                'message' => $e->getMessage()
+            ], 500);
+        }
     }
 
     public function statistiques(Request $request)

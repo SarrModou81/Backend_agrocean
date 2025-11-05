@@ -106,6 +106,7 @@ Route::middleware('auth:api')->group(function () {
 
     // ===== PAIEMENTS =====
     Route::apiResource('paiements', PaiementController::class);
+    Route::get('/paiements/statistiques/analyse', [PaiementController::class, 'statistiques']);
 
     // ===== ALERTES =====
     Route::get('/alertes', [AlerteController::class, 'index']);

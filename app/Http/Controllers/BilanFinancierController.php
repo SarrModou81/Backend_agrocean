@@ -8,8 +8,11 @@ use App\Models\Vente;
 use App\Models\CommandeAchat;
 use App\Models\Paiement;
 use App\Models\Stock;
+use App\Models\Facture;
+use App\Models\FactureFournisseur;
 use Illuminate\Http\Request;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
 
 class BilanFinancierController extends Controller
 {
@@ -36,31 +39,38 @@ class BilanFinancierController extends Controller
         $dateDebut = Carbon::parse($request->date_debut);
         $dateFin = Carbon::parse($request->date_fin);
 
-        // Calculer le chiffre d'affaires
+        // Calculer le chiffre d'affaires (ventes validées/livrées)
         $chiffreAffaires = Vente::whereBetween('date_vente', [$dateDebut, $dateFin])
-            ->where('statut', '!=', 'Annulée')
+            ->whereIn('statut', ['Validée', 'Livrée'])
             ->sum('montant_ttc');
 
-        // Calculer les charges d'exploitation (commandes d'achat)
+        // Calculer les charges d'exploitation (commandes d'achat reçues)
         $chargesExploitation = CommandeAchat::whereBetween('date_commande', [$dateDebut, $dateFin])
             ->where('statut', 'Reçue')
             ->sum('montant_total');
 
-        // Calculer la marge globale
+        // Calculer la marge globale réelle
         $ventes = Vente::with('detailVentes.produit')
             ->whereBetween('date_vente', [$dateDebut, $dateFin])
-            ->where('statut', '!=', 'Annulée')
+            ->whereIn('statut', ['Validée', 'Livrée'])
             ->get();
 
         $margeGlobale = 0;
         foreach ($ventes as $vente) {
             foreach ($vente->detailVentes as $detail) {
-                $margeGlobale += $detail->quantite * ($detail->produit->prix_vente - $detail->produit->prix_achat);
+                if ($detail->produit) {
+                    $coutAchat = $detail->quantite * $detail->produit->prix_achat;
+                    $prixVente = $detail->quantite * $detail->prix_unitaire;
+                    $margeGlobale += ($prixVente - $coutAchat);
+                }
             }
         }
 
         // Calculer le bénéfice net
-        $beneficeNet = $margeGlobale - $chargesExploitation;
+        $beneficeNet = $chiffreAffaires - $chargesExploitation;
+
+        // Taux de marge
+        $tauxMarge = $chiffreAffaires > 0 ? ($margeGlobale / $chiffreAffaires) * 100 : 0;
 
         // Créer ou mettre à jour le bilan
         $bilan = BilanFinancier::updateOrCreate(
@@ -73,13 +83,18 @@ class BilanFinancierController extends Controller
                 'chiffre_affaires' => $chiffreAffaires,
                 'charges_exploitation' => $chargesExploitation,
                 'benefice_net' => $beneficeNet,
-                'marge_globale' => $margeGlobale
+                'marge_globale' => $tauxMarge
             ]
         );
 
         return response()->json([
             'message' => 'Bilan financier généré avec succès',
-            'bilan' => $bilan
+            'bilan' => $bilan,
+            'details' => [
+                'nombre_ventes' => $ventes->count(),
+                'marge_brute' => $margeGlobale,
+                'taux_marge' => round($tauxMarge, 2) . '%'
+            ]
         ], 201);
     }
 
@@ -95,27 +110,26 @@ class BilanFinancierController extends Controller
     /**
      * État de la trésorerie
      */
-// app/Http/Controllers/BilanFinancierController.php
     public function etatTresorerie(Request $request)
     {
         $dateDebut = $request->input('date_debut', now()->startOfMonth());
         $dateFin = $request->input('date_fin', now()->endOfMonth());
 
         // ENCAISSEMENTS = Paiements reçus des CLIENTS uniquement
-        $encaissements = Paiement::whereNotNull('facture_id') // Factures clients
-        ->whereBetween('date_paiement', [$dateDebut, $dateFin])
+        $encaissements = Paiement::whereNotNull('facture_id')
+            ->whereBetween('date_paiement', [$dateDebut, $dateFin])
             ->sum('montant');
 
         // DÉCAISSEMENTS = Paiements faits aux FOURNISSEURS uniquement
-        $decaissements = Paiement::whereNotNull('facture_fournisseur_id') // Factures fournisseurs
-        ->whereBetween('date_paiement', [$dateDebut, $dateFin])
+        $decaissements = Paiement::whereNotNull('facture_fournisseur_id')
+            ->whereBetween('date_paiement', [$dateDebut, $dateFin])
             ->sum('montant');
 
         // Solde de trésorerie
         $solde = $encaissements - $decaissements;
 
         // CRÉANCES CLIENTS = Factures clients impayées ou partiellement payées
-        $creancesClients = \App\Models\Facture::whereIn('statut', ['Impayée', 'Partiellement Payée'])
+        $creancesClients = Facture::whereIn('statut', ['Impayée', 'Partiellement Payée'])
             ->with('paiements')
             ->get()
             ->sum(function($facture) {
@@ -123,7 +137,7 @@ class BilanFinancierController extends Controller
             });
 
         // DETTES FOURNISSEURS = Factures fournisseurs impayées ou partiellement payées
-        $dettesFournisseurs = \App\Models\FactureFournisseur::whereIn('statut', ['Impayée', 'Partiellement Payée'])
+        $dettesFournisseurs = FactureFournisseur::whereIn('statut', ['Impayée', 'Partiellement Payée'])
             ->with('paiements')
             ->get()
             ->sum(function($facture) {
@@ -148,9 +162,9 @@ class BilanFinancierController extends Controller
 
             $evolutionQuotidienne[] = [
                 'date' => $debut->format('Y-m-d'),
-                'encaissements' => $encJour,
-                'decaissements' => $decJour,
-                'solde' => $encJour - $decJour
+                'encaissements' => (float) $encJour,
+                'decaissements' => (float) $decJour,
+                'solde' => (float) ($encJour - $decJour)
             ];
 
             $debut->addDay();
@@ -161,15 +175,16 @@ class BilanFinancierController extends Controller
                 'debut' => $dateDebut,
                 'fin' => $dateFin
             ],
-            'encaissements' => $encaissements,
-            'decaissements' => $decaissements,
-            'solde' => $solde,
-            'creances_clients' => $creancesClients,
-            'dettes_fournisseurs' => $dettesFournisseurs,
-            'tresorerie_nette' => $solde - $dettesFournisseurs + $creancesClients,
+            'encaissements' => (float) $encaissements,
+            'decaissements' => (float) $decaissements,
+            'solde' => (float) $solde,
+            'creances_clients' => (float) $creancesClients,
+            'dettes_fournisseurs' => (float) $dettesFournisseurs,
+            'tresorerie_nette' => (float) ($solde - $dettesFournisseurs + $creancesClients),
             'evolution_quotidienne' => $evolutionQuotidienne
         ]);
     }
+
     /**
      * Compte de résultat
      */
@@ -179,8 +194,12 @@ class BilanFinancierController extends Controller
         $dateFin = $request->input('date_fin', now()->endOfMonth());
 
         // PRODUITS
-        $ventes = Vente::whereBetween('date_vente', [$dateDebut, $dateFin])
-            ->where('statut', '!=', 'Annulée')
+        $ventesHT = Vente::whereBetween('date_vente', [$dateDebut, $dateFin])
+            ->whereIn('statut', ['Validée', 'Livrée'])
+            ->sum('montant_ht');
+
+        $ventesTTC = Vente::whereBetween('date_vente', [$dateDebut, $dateFin])
+            ->whereIn('statut', ['Validée', 'Livrée'])
             ->sum('montant_ttc');
 
         // CHARGES
@@ -191,20 +210,27 @@ class BilanFinancierController extends Controller
         // Calculer les marges
         $ventesList = Vente::with('detailVentes.produit')
             ->whereBetween('date_vente', [$dateDebut, $dateFin])
-            ->where('statut', '!=', 'Annulée')
+            ->whereIn('statut', ['Validée', 'Livrée'])
             ->get();
 
         $margeCommerciale = 0;
+        $coutAchatTotal = 0;
+
         foreach ($ventesList as $vente) {
             foreach ($vente->detailVentes as $detail) {
-                $margeCommerciale += $detail->quantite * ($detail->produit->prix_vente - $detail->produit->prix_achat);
+                if ($detail->produit) {
+                    $coutAchat = $detail->quantite * $detail->produit->prix_achat;
+                    $prixVente = $detail->quantite * $detail->prix_unitaire;
+                    $coutAchatTotal += $coutAchat;
+                    $margeCommerciale += ($prixVente - $coutAchat);
+                }
             }
         }
 
         // Résultat d'exploitation
-        $resultatExploitation = $margeCommerciale - $achats;
+        $resultatExploitation = $ventesHT - $achats;
 
-        // Résultat net (simplifié)
+        // Résultat net (simplifié - en réalité il faudrait ajouter charges financières, impôts, etc.)
         $resultatNet = $resultatExploitation;
 
         return response()->json([
@@ -213,21 +239,24 @@ class BilanFinancierController extends Controller
                 'fin' => $dateFin
             ],
             'produits' => [
-                'ventes_marchandises' => $ventes,
-                'total_produits' => $ventes
+                'ventes_marchandises_ht' => (float) $ventesHT,
+                'ventes_marchandises_ttc' => (float) $ventesTTC,
+                'total_produits' => (float) $ventesHT
             ],
             'charges' => [
-                'achats_marchandises' => $achats,
-                'total_charges' => $achats
+                'achats_marchandises' => (float) $achats,
+                'cout_achat_produits_vendus' => (float) $coutAchatTotal,
+                'total_charges' => (float) $achats
             ],
             'resultats' => [
-                'marge_commerciale' => $margeCommerciale,
-                'resultat_exploitation' => $resultatExploitation,
-                'resultat_net' => $resultatNet
+                'marge_commerciale' => (float) $margeCommerciale,
+                'resultat_exploitation' => (float) $resultatExploitation,
+                'resultat_net' => (float) $resultatNet
             ],
             'ratios' => [
-                'taux_marge' => $ventes > 0 ? round(($margeCommerciale / $ventes) * 100, 2) : 0,
-                'taux_rentabilite' => $ventes > 0 ? round(($resultatNet / $ventes) * 100, 2) : 0
+                'taux_marge' => $ventesHT > 0 ? round(($margeCommerciale / $ventesHT) * 100, 2) : 0,
+                'taux_marque' => $coutAchatTotal > 0 ? round(($margeCommerciale / $coutAchatTotal) * 100, 2) : 0,
+                'taux_rentabilite' => $ventesHT > 0 ? round(($resultatNet / $ventesHT) * 100, 2) : 0
             ]
         ]);
     }
@@ -247,20 +276,27 @@ class BilanFinancierController extends Controller
                 return $stock->calculerValeur();
             });
 
-        $creances = \App\Models\Facture::whereIn('statut', ['Impayée', 'Partiellement Payée'])
+        $creances = Facture::whereIn('statut', ['Impayée', 'Partiellement Payée'])
             ->with('paiements')
             ->get()
             ->sum(function($facture) {
                 return $facture->montant_ttc - $facture->paiements->sum('montant');
             });
 
-        $totalActifCirculant = $stocksValeur + $creances;
+        // Trésorerie = Encaissements - Décaissements depuis le début
+        $tresorerie = Paiement::whereNotNull('facture_id')->sum('montant')
+            - Paiement::whereNotNull('facture_fournisseur_id')->sum('montant');
+
+        $totalActifCirculant = $stocksValeur + $creances + max(0, $tresorerie);
 
         // PASSIF
         // Dettes fournisseurs
-        $dettesFournisseurs = CommandeAchat::where('statut', 'Reçue')
-            ->whereDoesntHave('paiements')
-            ->sum('montant_total');
+        $dettesFournisseurs = FactureFournisseur::whereIn('statut', ['Impayée', 'Partiellement Payée'])
+            ->with('paiements')
+            ->get()
+            ->sum(function($facture) {
+                return $facture->montant_total - $facture->paiements->sum('montant');
+            });
 
         // Capitaux propres (simplifié)
         $capitauxPropres = $totalActifCirculant - $dettesFournisseurs;
@@ -269,22 +305,24 @@ class BilanFinancierController extends Controller
             'date' => $date,
             'actif' => [
                 'actif_circulant' => [
-                    'stocks' => $stocksValeur,
-                    'creances_clients' => $creances,
-                    'total' => $totalActifCirculant
+                    'stocks' => (float) $stocksValeur,
+                    'creances_clients' => (float) $creances,
+                    'tresorerie' => (float) max(0, $tresorerie),
+                    'total' => (float) $totalActifCirculant
                 ],
-                'total_actif' => $totalActifCirculant
+                'total_actif' => (float) $totalActifCirculant
             ],
             'passif' => [
-                'capitaux_propres' => $capitauxPropres,
+                'capitaux_propres' => (float) $capitauxPropres,
                 'dettes' => [
-                    'fournisseurs' => $dettesFournisseurs,
-                    'total_dettes' => $dettesFournisseurs
+                    'fournisseurs' => (float) $dettesFournisseurs,
+                    'total_dettes' => (float) $dettesFournisseurs
                 ],
-                'total_passif' => $capitauxPropres + $dettesFournisseurs
+                'total_passif' => (float) ($capitauxPropres + $dettesFournisseurs)
             ],
             'verification' => [
-                'equilibre' => $totalActifCirculant === ($capitauxPropres + $dettesFournisseurs)
+                'equilibre' => abs($totalActifCirculant - ($capitauxPropres + $dettesFournisseurs)) < 0.01,
+                'difference' => (float) ($totalActifCirculant - ($capitauxPropres + $dettesFournisseurs))
             ]
         ]);
     }
@@ -297,24 +335,32 @@ class BilanFinancierController extends Controller
         $moisActuel = now()->startOfMonth();
         $finMois = now()->endOfMonth();
 
+        $caMois = Vente::whereBetween('date_vente', [$moisActuel, $finMois])
+            ->whereIn('statut', ['Validée', 'Livrée'])
+            ->sum('montant_ttc');
+
+        $depensesMois = CommandeAchat::whereBetween('date_commande', [$moisActuel, $finMois])
+            ->where('statut', 'Reçue')
+            ->sum('montant_total');
+
+        $creancesTotales = Facture::whereIn('statut', ['Impayée', 'Partiellement Payée'])
+            ->with('paiements')
+            ->get()
+            ->sum(function($facture) {
+                return $facture->montant_ttc - $facture->paiements->sum('montant');
+            });
+
+        $valeurStock = Stock::where('statut', 'Disponible')
+            ->get()
+            ->sum(function($stock) {
+                return $stock->calculerValeur();
+            });
+
         return response()->json([
-            'ca_mois' => Vente::whereBetween('date_vente', [$moisActuel, $finMois])
-                ->where('statut', '!=', 'Annulée')
-                ->sum('montant_ttc'),
-            'depenses_mois' => CommandeAchat::whereBetween('date_commande', [$moisActuel, $finMois])
-                ->where('statut', 'Reçue')
-                ->sum('montant_total'),
-            'creances_totales' => \App\Models\Facture::whereIn('statut', ['Impayée', 'Partiellement Payée'])
-                ->with('paiements')
-                ->get()
-                ->sum(function($facture) {
-                    return $facture->montant_ttc - $facture->paiements->sum('montant');
-                }),
-            'valeur_stock' => Stock::where('statut', 'Disponible')
-                ->get()
-                ->sum(function($stock) {
-                    return $stock->calculerValeur();
-                })
+            'ca_mois' => (float) $caMois,
+            'depenses_mois' => (float) $depensesMois,
+            'creances_totales' => (float) $creancesTotales,
+            'valeur_stock' => (float) $valeurStock
         ]);
     }
 }

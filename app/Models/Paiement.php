@@ -13,6 +13,7 @@ class Paiement extends Model
 
     protected $fillable = [
         'facture_id',
+        'facture_fournisseur_id',
         'client_id',
         'fournisseur_id',
         'montant',
@@ -31,6 +32,11 @@ class Paiement extends Model
         return $this->belongsTo(Facture::class);
     }
 
+    public function factureFournisseur()
+    {
+        return $this->belongsTo(FactureFournisseur::class);
+    }
+
     public function client()
     {
         return $this->belongsTo(Client::class);
@@ -41,40 +47,55 @@ class Paiement extends Model
         return $this->belongsTo(Fournisseur::class);
     }
 
-    public function factureFournisseur()
-    {
-        return $this->belongsTo(FactureFournisseur::class);
-    }
-
     protected static function boot()
     {
         parent::boot();
 
         static::created(function ($paiement) {
-            // Mise à jour facture client
-            if ($paiement->facture) {
-                $totalPaiements = $paiement->facture->paiements->sum('montant');
+            // Mise à jour facture CLIENT
+            if ($paiement->facture_id && $paiement->facture) {
+                $facture = $paiement->facture;
+                $totalPaiements = round($facture->paiements()->sum('montant'), 2);
+                $montantFacture = round($facture->montant_ttc, 2);
 
-                if ($totalPaiements >= $paiement->facture->montant_ttc) {
-                    $paiement->facture->statut = 'Payée';
+                // Calculer le montant restant
+                $montantRestant = $montantFacture - $totalPaiements;
+
+                // Si le montant restant est très petit (erreur d'arrondi), on considère comme payé
+                if (abs($montantRestant) < 0.01) {
+                    $facture->statut = 'Payée';
+                } elseif ($totalPaiements >= $montantFacture) {
+                    $facture->statut = 'Payée';
+                } elseif ($totalPaiements > 0) {
+                    $facture->statut = 'Partiellement Payée';
                 } else {
-                    $paiement->facture->statut = 'Partiellement Payée';
+                    $facture->statut = 'Impayée';
                 }
 
-                $paiement->facture->save();
+                $facture->save();
             }
 
-            // Mise à jour facture fournisseur
-            if ($paiement->factureFournisseur) {
-                $totalPaiements = $paiement->factureFournisseur->paiements->sum('montant');
+            // Mise à jour facture FOURNISSEUR
+            if ($paiement->facture_fournisseur_id && $paiement->factureFournisseur) {
+                $facture = $paiement->factureFournisseur;
+                $totalPaiements = round($facture->paiements()->sum('montant'), 2);
+                $montantFacture = round($facture->montant_total, 2);
 
-                if ($totalPaiements >= $paiement->factureFournisseur->montant_total) {
-                    $paiement->factureFournisseur->statut = 'Payée';
+                // Calculer le montant restant
+                $montantRestant = $montantFacture - $totalPaiements;
+
+                // Si le montant restant est très petit (erreur d'arrondi), on considère comme payé
+                if (abs($montantRestant) < 0.01) {
+                    $facture->statut = 'Payée';
+                } elseif ($totalPaiements >= $montantFacture) {
+                    $facture->statut = 'Payée';
+                } elseif ($totalPaiements > 0) {
+                    $facture->statut = 'Partiellement Payée';
                 } else {
-                    $paiement->factureFournisseur->statut = 'Partiellement Payée';
+                    $facture->statut = 'Impayée';
                 }
 
-                $paiement->factureFournisseur->save();
+                $facture->save();
             }
         });
     }

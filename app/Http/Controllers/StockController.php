@@ -245,6 +245,7 @@ class StockController extends Controller
     {
         $stock = Stock::findOrFail($id);
 
+        // Autoriser la suppression seulement si quantité = 0 OU statut n'est pas Disponible
         if ($stock->quantite > 0 && $stock->statut == 'Disponible') {
             return response()->json([
                 'error' => 'Impossible de supprimer un stock disponible avec des quantités',

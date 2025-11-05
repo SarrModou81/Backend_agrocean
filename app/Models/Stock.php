@@ -49,13 +49,14 @@ class Stock extends Model
             throw new \Exception("La quantité ne peut pas être négative pour le stock ID: {$this->id}. Quantité actuelle: {$this->quantite}, ajustement demandé: {$quantite}");
         }
 
+        // Mettre à jour la quantité
         $this->quantite = $nouvelleQuantite;
 
-        // Mettre à jour le statut si la quantité tombe à 0
-        if ($nouvelleQuantite == 0) {
-            $this->statut = 'Épuisé';
-        } elseif ($this->statut == 'Épuisé' && $nouvelleQuantite > 0) {
-            $this->statut = 'Disponible';
+        // Ne pas changer le statut automatiquement
+        // Le statut doit être géré manuellement par l'utilisateur
+        // Seule exception : si le stock est périmé après vérification de date
+        if ($this->date_peremption && Carbon::now()->greaterThan($this->date_peremption)) {
+            $this->statut = 'Périmé';
         }
 
         $this->save();
