@@ -238,10 +238,8 @@ class StockController extends Controller
         }
     }
 
-    // ... (le reste des méthodes reste identique)
-
     /**
-     * Supprimer un stock (soft delete ou réel selon besoin)
+     * Supprimer un stock
      */
     public function destroy($id)
     {
@@ -259,5 +257,171 @@ class StockController extends Controller
         return response()->json([
             'message' => 'Stock supprimé avec succès'
         ]);
+    }
+
+    /**
+     * Vérifier les produits en péremption
+     */
+    public function verifierPeremptions()
+    {
+        $stocksProchesPeremption = Stock::expirationProche(7)
+            ->with(['produit', 'entrepot'])
+            ->get();
+
+        $stocksExpires = Stock::where('date_peremption', '<', Carbon::now())
+            ->where('statut', '!=', 'Périmé')
+            ->with(['produit', 'entrepot'])
+            ->get();
+
+        // Mettre à jour les stocks expirés
+        foreach ($stocksExpires as $stock) {
+            $stock->statut = 'Périmé';
+            $stock->save();
+
+            // Créer une alerte
+            Alerte::firstOrCreate([
+                'type' => 'Péremption',
+                'produit_id' => $stock->produit_id,
+                'message' => "Le lot {$stock->numero_lot} du produit {$stock->produit->nom} est périmé",
+                'lue' => false
+            ]);
+        }
+
+        // Créer des alertes pour les stocks proches de la péremption
+        foreach ($stocksProchesPeremption as $stock) {
+            $joursRestants = Carbon::now()->diffInDays($stock->date_peremption);
+            Alerte::firstOrCreate([
+                'type' => 'Péremption',
+                'produit_id' => $stock->produit_id,
+                'message' => "Le lot {$stock->numero_lot} du produit {$stock->produit->nom} expire dans {$joursRestants} jour(s)",
+                'lue' => false
+            ]);
+        }
+
+        return response()->json([
+            'expires' => $stocksExpires->count(),
+            'proche_expiration' => $stocksProchesPeremption->count(),
+            'details' => [
+                'expires' => $stocksExpires,
+                'proche_expiration' => $stocksProchesPeremption
+            ]
+        ]);
+    }
+
+    /**
+     * Inventaire complet
+     */
+    public function inventaire(Request $request)
+    {
+        $query = Stock::with(['produit.categorie', 'entrepot'])
+            ->where('statut', 'Disponible');
+
+        if ($request->has('entrepot_id')) {
+            $query->where('entrepot_id', $request->entrepot_id);
+        }
+
+        $stocks = $query->get();
+
+        // Statistiques globales
+        $totalProduits = $stocks->groupBy('produit_id')->count();
+        $quantiteTotale = $stocks->sum('quantite');
+        $valeurTotale = $stocks->sum(function($stock) {
+            return $stock->calculerValeur();
+        });
+
+        // Par entrepôt
+        $parEntrepot = $stocks->groupBy('entrepot_id')->map(function($items) {
+            return [
+                'entrepot' => $items->first()->entrepot->nom,
+                'nombre_produits' => $items->groupBy('produit_id')->count(),
+                'quantite_totale' => $items->sum('quantite'),
+                'valeur_totale' => $items->sum(function($stock) {
+                    return $stock->calculerValeur();
+                })
+            ];
+        })->values();
+
+        // Par catégorie
+        $parCategorie = $stocks->groupBy(function($stock) {
+            return $stock->produit->categorie_id;
+        })->map(function($items) {
+            return [
+                'categorie' => $items->first()->produit->categorie->nom,
+                'nombre_produits' => $items->groupBy('produit_id')->count(),
+                'quantite_totale' => $items->sum('quantite'),
+                'valeur_totale' => $items->sum(function($stock) {
+                    return $stock->calculerValeur();
+                })
+            ];
+        })->values();
+
+        return response()->json([
+            'total_produits' => $totalProduits,
+            'quantite_totale' => $quantiteTotale,
+            'valeur_totale' => $valeurTotale,
+            'par_entrepot' => $parEntrepot,
+            'par_categorie' => $parCategorie
+        ]);
+    }
+
+    /**
+     * Tracer un produit (historique complet)
+     */
+    public function tracerProduit($produitId)
+    {
+        $produit = Produit::findOrFail($produitId);
+
+        $mouvements = Stock::where('produit_id', $produitId)
+            ->with(['entrepot'])
+            ->orderBy('date_entree', 'desc')
+            ->get();
+
+        $ventes = \App\Models\DetailVente::where('produit_id', $produitId)
+            ->with(['vente.client'])
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        $commandesAchat = \App\Models\DetailCommandeAchat::where('produit_id', $produitId)
+            ->with(['commandeAchat.fournisseur'])
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        return response()->json([
+            'produit' => $produit,
+            'stock_actuel' => $produit->stockTotal(),
+            'mouvements_stock' => $mouvements,
+            'ventes' => $ventes,
+            'commandes_achat' => $commandesAchat
+        ]);
+    }
+
+    /**
+     * Mouvements de stock pour une période
+     */
+    public function mouvementsPeriode(Request $request)
+    {
+        $dateDebut = $request->input('date_debut', Carbon::now()->startOfMonth());
+        $dateFin = $request->input('date_fin', Carbon::now()->endOfMonth());
+
+        $mouvements = Stock::with(['produit', 'entrepot'])
+            ->whereBetween('created_at', [$dateDebut, $dateFin])
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        // Enrichir avec le type de mouvement
+        $mouvementsEnrichis = $mouvements->map(function($stock) {
+            return [
+                'id' => $stock->id,
+                'date' => $stock->created_at,
+                'type' => 'Entrée', // Pour simplifier, considérer toutes les créations comme des entrées
+                'produit' => $stock->produit,
+                'entrepot' => $stock->entrepot,
+                'numero_lot' => $stock->numero_lot,
+                'quantite' => $stock->quantite,
+                'motif' => 'Mouvement de stock'
+            ];
+        });
+
+        return response()->json($mouvementsEnrichis);
     }
 }
