@@ -28,6 +28,12 @@ class ProduitController extends Controller
 
         $produits = $query->paginate(20);
 
+        // ✅ IMPORTANT: S'assurer que stock_total est calculé pour chaque produit
+        $produits->getCollection()->transform(function($produit) {
+            $produit->stock_total = $produit->stockTotal();
+            return $produit;
+        });
+
         return response()->json($produits);
     }
 
