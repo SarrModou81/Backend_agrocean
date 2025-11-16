@@ -112,4 +112,5 @@ class Produit extends Model
             ->where('statut', 'Disponible')
             ->sum('quantite');
     }
+
 }

@@ -2,6 +2,7 @@
 
 // routes/api.php
 
+use App\Http\Controllers\DemandeApprovisionnementController;
 use App\Http\Controllers\FactureFournisseurController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
@@ -140,4 +141,12 @@ Route::middleware('auth:api')->group(function () {
     Route::get('/factures-fournisseurs/impayees/liste', [FactureFournisseurController::class, 'impayees']);
     Route::get('/factures-fournisseurs/{id}/generer-pdf', [FactureFournisseurController::class, 'genererPDF']);
 
+    Route::apiResource('demandes-approvisionnement', DemandeApprovisionnementController::class);
+    Route::post('/demandes-approvisionnement/{id}/envoyer', [DemandeApprovisionnementController::class, 'envoyer']);
+    Route::post('/demandes-approvisionnement/{id}/prendre-en-charge', [DemandeApprovisionnementController::class, 'prendrEnCharge']);
+    Route::post('/demandes-approvisionnement/{id}/traiter', [DemandeApprovisionnementController::class, 'traiter']);
+    Route::post('/demandes-approvisionnement/{id}/rejeter', [DemandeApprovisionnementController::class, 'rejeter']);
+    Route::post('/demandes-approvisionnement/{id}/annuler', [DemandeApprovisionnementController::class, 'annuler']);
+    Route::get('/demandes-approvisionnement/agents/liste', [DemandeApprovisionnementController::class, 'getAgents']);
+    Route::get('/demandes-approvisionnement/stats/global', [DemandeApprovisionnementController::class, 'statistiques']);
 });
