@@ -7,10 +7,12 @@ RUN apt-get update && apt-get install -y \
     libpng-dev \
     libonig-dev \
     libxml2-dev \
+    libpq-dev \
     zip \
     unzip
 
-RUN docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd
+# Extensions PHP (ajout de pdo_pgsql et pgsql)
+RUN docker-php-ext-install pdo_pgsql pgsql pdo_mysql mbstring exif pcntl bcmath gd
 
 # Installation de Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
@@ -30,5 +32,5 @@ RUN chown -R www-data:www-data /var/www/storage /var/www/bootstrap/cache
 # Exposer le port
 EXPOSE 10000
 
-# Commande de démarrage
-CMD php artisan serve --host=0.0.0.0 --port=${PORT:-10000}
+# Commande de démarrage avec migrations
+CMD php artisan migrate --force && php artisan serve --host=0.0.0.0 --port=${PORT:-10000}
