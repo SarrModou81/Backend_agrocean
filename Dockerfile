@@ -32,5 +32,3 @@ EXPOSE 10000
 
 # Commande de démarrage
 CMD php artisan serve --host=0.0.0.0 --port=${PORT:-10000}
-```
-
