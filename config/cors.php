@@ -4,7 +4,7 @@ return [
 
     'paths' => ['api/*', 'sanctum/csrf-cookie'],
     'allowed_methods' => ['*'],
-    'allowed_origins' => ['http://localhost:4200'],
+    'allowed_origins' => ['frontend-agrocean-fh3j.vercel.app','http://localhost:4200'],
     'allowed_origins_patterns' => [],
     'allowed_headers' => ['*'],
     'exposed_headers' => [],
