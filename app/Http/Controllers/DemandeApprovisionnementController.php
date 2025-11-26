@@ -327,4 +327,30 @@ class DemandeApprovisionnementController extends Controller
 
         return response()->json($stats);
     }
+
+    /**
+     * Compter les demandes en attente (Envoyée + EnCours)
+     */
+    public function countEnAttente(Request $request)
+    {
+        $user = auth()->user();
+
+        if ($user->role === 'AgentApprovisionnement') {
+            // Pour l'agent : compter les demandes Envoyée (non assignées) + EnCours (assignées à lui)
+            $count = DemandeApprovisionnement::where(function($query) use ($user) {
+                $query->where('statut', 'Envoyée')
+                    ->orWhere(function($q) use ($user) {
+                        $q->where('statut', 'EnCours')
+                            ->where('destinataire_id', $user->id);
+                    });
+            })->count();
+        } elseif ($user->role === 'Administrateur') {
+            // Pour l'admin : toutes les demandes en attente
+            $count = DemandeApprovisionnement::whereIn('statut', ['Envoyée', 'EnCours'])->count();
+        } else {
+            $count = 0;
+        }
+
+        return response()->json(['count' => $count]);
+    }
 }

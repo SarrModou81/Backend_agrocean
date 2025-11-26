@@ -141,6 +141,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('/factures-fournisseurs/impayees/liste', [FactureFournisseurController::class, 'impayees']);
     Route::get('/factures-fournisseurs/{id}/generer-pdf', [FactureFournisseurController::class, 'genererPDF']);
 
+    Route::get('/demandes-approvisionnement/count/en-attente', [DemandeApprovisionnementController::class, 'countEnAttente']);
     Route::apiResource('demandes-approvisionnement', DemandeApprovisionnementController::class);
     Route::post('/demandes-approvisionnement/{id}/envoyer', [DemandeApprovisionnementController::class, 'envoyer']);
     Route::post('/demandes-approvisionnement/{id}/prendre-en-charge', [DemandeApprovisionnementController::class, 'prendrEnCharge']);
