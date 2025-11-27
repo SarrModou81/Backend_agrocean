@@ -1,14 +1,18 @@
 <?php
 
 return [
+
+    /*
+    |--------------------------------------------------------------------------
+    | Cross-Origin Resource Sharing (CORS) Configuration
+    |--------------------------------------------------------------------------
+    */
+
     'paths' => ['api/*', 'sanctum/csrf-cookie'],
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => [
-        'https://frontend-agrocean-fh3j.vercel.app',
-        'http://localhost:4200', // Pour le développement local
-    ],
+    'allowed_origins' => ['*'], // Temporairement pour tester
 
     'allowed_origins_patterns' => [],
 
@@ -16,7 +20,8 @@ return [
 
     'exposed_headers' => [],
 
-    'max_age' => 0,
+    'max_age' => 86400,
 
     'supports_credentials' => true,
+
 ];
